@@ -293,7 +293,7 @@ async function loadToolHelper() {
   }
 }
 
-export const CommunicationController = async (ctx) => {
+const CommunicationController = async (ctx) => {
   const client = (ctx && ctx.client) || null;
   loadConfig();
 
@@ -480,4 +480,12 @@ export const CommunicationController = async (ctx) => {
   }
 
   return hooks;
+};
+
+// Stable plugin identity: single default export (V1 module shape).
+// Keep exactly one export — a second (named) export would register the
+// plugin twice on runtimes that also scan named exports.
+export default {
+  id: "communication-controller",
+  server: CommunicationController,
 };
