@@ -1,9 +1,21 @@
 {
-  "name": "communication-controller",
+  "name": "opencode-communication-controller",
   "version": "1.0.0",
   "description": "Global OpenCode plugin: plain-language answers by default, technical detail on demand.",
   "type": "module",
+  "main": "./plugins/communication-controller.js",
+  "exports": {
+    ".": "./plugins/communication-controller.js",
+    "./plugin": "./plugins/communication-controller.js"
+  },
+  "files": [
+    "plugins/",
+    "commands/",
+    "README.md",
+    "communication-controller.json"
+  ],
   "dependencies": {
     "@opencode-ai/plugin": "1.18.15"
-  }
+  },
+  "license": "MIT"
 }
