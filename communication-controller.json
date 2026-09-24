@@ -1,0 +1,8 @@
+{
+  "defaultMode": "functional",
+  "allowExplicitTechnicalRequests": true,
+  "strictFunctionalMode": true,
+  "investigationNarration": false,
+  "verificationAwareness": true,
+  "responseValidation": true
+}
