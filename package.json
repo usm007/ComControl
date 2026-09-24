@@ -1,0 +1,9 @@
+{
+  "name": "communication-controller",
+  "version": "1.0.0",
+  "description": "Global OpenCode plugin: plain-language answers by default, technical detail on demand.",
+  "type": "module",
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.15"
+  }
+}
