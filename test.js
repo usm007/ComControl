@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import ControllerPlugin from "./plugins/communication-controller.js";
 
-assert.equal(ControllerPlugin.id, "communication-controller", "stable plugin id present");
+assert.equal(ControllerPlugin.id, "comcontrol", "stable plugin id present");
 assert.equal(typeof ControllerPlugin.server, "function", "server entry present");
 const CommunicationController = ControllerPlugin.server;
 

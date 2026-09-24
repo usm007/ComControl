@@ -486,6 +486,6 @@ const CommunicationController = async (ctx) => {
 // Keep exactly one export — a second (named) export would register the
 // plugin twice on runtimes that also scan named exports.
 export default {
-  id: "communication-controller",
+  id: "comcontrol",
   server: CommunicationController,
 };

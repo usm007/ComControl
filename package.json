@@ -1,5 +1,5 @@
 {
-  "name": "opencode-communication-controller",
+  "name": "comcontrol",
   "version": "1.0.0",
   "description": "Global OpenCode plugin: plain-language answers by default, technical detail on demand.",
   "type": "module",
