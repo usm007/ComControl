@@ -4,7 +4,7 @@
  * OpenCode session needed. Run: node test.js
  */
 import assert from "node:assert/strict";
-import { CommunicationController } from "../plugins/communication-controller.js";
+import { CommunicationController } from "./plugins/communication-controller.js";
 
 let passed = 0;
 function check(name, fn) {
