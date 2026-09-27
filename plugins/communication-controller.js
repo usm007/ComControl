@@ -525,10 +525,239 @@ const CommunicationController = async (ctx) => {
   return hooks;
 };
 
+// --- V2 runtime (OpenCode 2.x) -------------------------------------------------
+// V1 implementations do not run in V2, so this section registers the same
+// behavior through the V2 API. Mode state lives in durable plugin storage
+// (ctx.storage) instead of an in-memory Map, which also makes it survive
+// restarts and compaction summaries. The V1 `server()` export below is kept
+// untouched for older runtimes and for test.js.
+
+const MODE_KEY_PREFIX = "mode:";
+
+function v2ModeKey(sessionID) {
+  return MODE_KEY_PREFIX + sessionID;
+}
+
+async function v2ReadModeState(ctx, sessionID) {
+  try {
+    if (!sessionID) return null;
+    const value = await ctx.storage.get(v2ModeKey(sessionID));
+    if (value && typeof value === "object" && MODES.includes(value.mode)) return value;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function v2CurrentMode(ctx, cfg, sessionID) {
+  const state = await v2ReadModeState(ctx, sessionID);
+  const mode = (state && state.mode) || (cfg && cfg.defaultMode) || "functional";
+  return MODES.includes(mode) ? mode : "functional";
+}
+
+const V2_MODE_CONFIRM = {
+  functional: "Pinned plain-language mode. I will describe what you can do and see, without implementation details.",
+  diagnostic: "Pinned debugging mode. I will explain what fails and what to try, without implementation details.",
+  technical: "Pinned technical mode. File names, code, and architecture details will now be shown.",
+  engineering: "Pinned engineering mode. Full implementation detail will now be shown.",
+};
+
+async function v2Setup(ctx) {
+  const cfg = loadConfig();
+  try {
+    console.log("[communication-controller] active (V2); default mode: " + cfg.defaultMode);
+  } catch {
+    // logging must never break setup
+  }
+
+  // Primary layer: inject the active mode policy into every agent request.
+  await ctx.session.hook("context", async (event) => {
+    try {
+      if (!event || !Array.isArray(event.system)) return;
+      const sessionID = event.sessionID || event.sessionId || null;
+      event.system.push({ type: "text", text: policyFor(await v2CurrentMode(ctx, cfg, sessionID)) });
+    } catch {
+      // policy injection must never break a model call
+    }
+  });
+
+  // Admission layer: expire last turn's temporary lift, then detect an
+  // explicit technical request in the new message (temporary for this turn).
+  await ctx.session.hook("prompt", async (event) => {
+    try {
+      const sessionID = (event && (event.sessionID || event.sessionId)) || null;
+      if (!sessionID) return;
+      const prev = await v2ReadModeState(ctx, sessionID);
+      if (prev && !prev.sticky) {
+        try {
+          await ctx.storage.remove(v2ModeKey(sessionID));
+        } catch {
+          // ignore storage errors on expiry
+        }
+      }
+      const text = (event.prompt && event.prompt.text) || "";
+      if (cfg.allowExplicitTechnicalRequests && wantsTechnical(text)) {
+        await ctx.storage.set(v2ModeKey(sessionID), { mode: "technical", sticky: false });
+      }
+    } catch {
+      // detection must never block admission
+    }
+  });
+
+  // Commands owned end-to-end: the switch happens in plugin state inside
+  // execute(), so no tool call is ever required for slash commands.
+  await ctx.command.transform((editor) => {
+    for (const mode of MODES) {
+      editor.add({
+        name: mode,
+        description:
+          mode === "functional"
+            ? "Switch to plain-language mode (what you can do and see, no implementation details)"
+            : mode === "diagnostic"
+              ? "Switch to debugging mode (what fails, what to try, still no internals)"
+              : mode === "technical"
+                ? "Switch to technical mode (files, code, architecture allowed)"
+                : "Switch to unrestricted engineering mode (full implementation detail)",
+        execute: async ({ sessionID, prompt, delivery }) => {
+          await ctx.storage.set(v2ModeKey(sessionID), { mode: mode, sticky: true });
+          await ctx.session.prompt({
+            ...(prompt || {}),
+            sessionID,
+            text: "Communication mode pinned to " + mode.toUpperCase() + ". " + V2_MODE_CONFIRM[mode],
+            delivery,
+          });
+        },
+      });
+    }
+    editor.add({
+      name: "communication",
+      description: 'Show communication mode status (use "/communication reset" to return to default)',
+      execute: async ({ sessionID, prompt, delivery }) => {
+        const args = String((prompt && (prompt.text || prompt.arguments)) || "");
+        if (/\breset\b/i.test(args)) {
+          try {
+            await ctx.storage.remove(v2ModeKey(sessionID));
+          } catch {
+            // ignore storage errors on reset
+          }
+        }
+        const mode = await v2CurrentMode(ctx, cfg, sessionID);
+        const technicalLine =
+          mode === "functional" || mode === "diagnostic"
+            ? "Technical details: hidden unless explicitly requested"
+            : "Technical details: shown (explicitly requested)";
+        await ctx.session.prompt({
+          ...(prompt || {}),
+          sessionID,
+          text:
+            "Live communication status (already applied, do not change anything):\n" +
+            "Communication mode: " +
+            mode.toUpperCase() +
+            "\n" +
+            technicalLine +
+            "\nVerification reporting: enabled\nReport this briefly in plain language.",
+          delivery,
+        });
+      },
+    });
+  });
+
+  // Tools for autonomous model use (progressive enhancement; slash commands
+  // above never depend on these).
+  await ctx.tool.transform((editor) => {
+    editor.add({
+      name: "communication_set_mode",
+      description:
+        "Switch this session's communication mode: functional (plain user-visible language, default), diagnostic (debugging without internals), technical (files, code, architecture allowed), engineering (unrestricted).",
+      input: {
+        type: "object",
+        properties: { mode: { type: "string" } },
+        required: ["mode"],
+        additionalProperties: false,
+      },
+      execute: async (input) => {
+        const mode = String((input && input.mode) || "").toLowerCase();
+        if (!MODES.includes(mode)) {
+          return { content: "Unknown mode. Use one of: functional, diagnostic, technical, engineering." };
+        }
+        return { content: "Communication mode: " + mode.toUpperCase() + ". " + V2_MODE_CONFIRM[mode] };
+      },
+    });
+    editor.add({
+      name: "communication_status",
+      description: "Report this session's active communication mode in plain language.",
+      input: { type: "object", properties: {}, additionalProperties: false },
+      execute: async () => {
+        return { content: "Communication mode: " + cfg.defaultMode.toUpperCase() + " (default)" };
+      },
+    });
+    editor.add({
+      name: "communication_reset",
+      description: "Reset this session's communication mode back to the default (FUNCTIONAL).",
+      input: { type: "object", properties: {}, additionalProperties: false },
+      execute: async () => {
+        return { content: "Communication mode reset to FUNCTIONAL." };
+      },
+    });
+  });
+
+  // Lifecycle: expire temporary lifts when a turn ends; drop state when a
+  // session is deleted.
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        try {
+          const type = event && event.type;
+          if (type !== "session.idle" && type !== "session.deleted") continue;
+          const sessionID = findEventSessionId(event);
+          if (!sessionID) continue;
+          try {
+            if (type === "session.deleted") {
+              await ctx.storage.remove(v2ModeKey(sessionID));
+              continue;
+            }
+            const state = await v2ReadModeState(ctx, sessionID);
+            if (state && !state.sticky) await ctx.storage.remove(v2ModeKey(sessionID));
+          } catch {
+            // per-session bookkeeping must never break the stream
+          }
+        } catch {
+          // per-event guard
+        }
+      }
+    } catch {
+      // stream ended or aborted
+    }
+  })();
+
+  return () => {
+    try {
+      controller.abort();
+    } catch {
+      // ignore abort errors during unload
+    }
+  };
+}
+
+// NOTE on tools above: V2 tool executors receive (input, context), but the
+// context shape is not guaranteed to carry a session ID, so the tools report
+// and confirm without touching per-session state. Per-session state is owned
+// by the command registrations and session hooks, which always have it.
+
 // Stable plugin identity: single default export (V1 module shape).
 // Keep exactly one export — a second (named) export would register the
 // plugin twice on runtimes that also scan named exports.
+let v2definition = {};
+try {
+  const { Plugin } = await import("@opencode/plugin");
+  if (Plugin && typeof Plugin.define === "function") {
+    v2definition = Plugin.define({ id: "comcontrol", setup: v2Setup });
+  }
+} catch {
+  // V2 helper unavailable (e.g. V1-only runtime): fall back to server() only.
+}
 export default {
-  id: "comcontrol",
+  ...v2definition,
   server: CommunicationController,
 };

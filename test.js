@@ -211,4 +211,131 @@ await checkAsync("system hook mutates in place and preserves cache shape", async
   assert.equal(output.system.length, 2);
 });
 
+// --- V2 runtime (OpenCode 2.x) ------------------------------------------------
+// Same behaviors through Plugin.define setup() with a mocked V2 context.
+function makeV2Ctx() {
+  const store = new Map();
+  const handlers = {};
+  const commands = new Map();
+  const tools = new Map();
+  const prompts = [];
+  const ctx = {
+    storage: {
+      get: async (k) => (store.has(k) ? store.get(k) : undefined),
+      set: async (k, v) => {
+        store.set(k, v);
+      },
+      remove: async (k) => {
+        store.delete(k);
+      },
+      scan: async ({ prefix }) => ({
+        entries: [...store.entries()]
+          .filter(([k]) => k.startsWith(prefix || ""))
+          .map(([key, value]) => ({ key, value })),
+      }),
+    },
+    session: {
+      hook: async (name, fn) => {
+        (handlers[name] = handlers[name] || []).push(fn);
+      },
+      prompt: async (input) => {
+        prompts.push(input);
+        return { id: "inbox_test" };
+      },
+    },
+    command: {
+      transform: async (cb) => {
+        cb({ add: (d) => commands.set(d.name, d) });
+      },
+    },
+    tool: {
+      transform: async (cb) => {
+        cb({
+          add: (d) => tools.set(d.name, d),
+          namespace() {},
+          update() {},
+          remove() {},
+          list: () => [],
+          get: () => undefined,
+        });
+      },
+    },
+    event: {
+      subscribe: async function* () {},
+    },
+    options: {},
+    location: { directory: process.cwd(), project: { id: "test-project" } },
+  };
+  return { ctx, store, handlers, commands, tools, prompts };
+}
+
+const v2setup = ControllerPlugin.setup;
+assert.equal(typeof v2setup, "function", "V2 setup present on default export");
+
+async function v2system(fns, sessionID, base) {
+  const event = { sessionID, system: base ? [...base] : [] };
+  for (const fn of fns.context || []) await fn(event);
+  return event.system.map((s) => (typeof s === "string" ? s : s.text || ""));
+}
+async function v2prompt(fns, sessionID, text) {
+  const event = { sessionID, prompt: { text } };
+  for (const fn of fns.prompt || []) await fn(event);
+}
+
+await checkAsync("V2 setup registers hooks, commands, and tools", async () => {
+  const v = makeV2Ctx();
+  await v2setup(v.ctx);
+  assert.ok((v.handlers.context || []).length >= 1, "context hook");
+  assert.ok((v.handlers.prompt || []).length >= 1, "prompt hook");
+  for (const name of ["functional", "diagnostic", "technical", "engineering", "communication"]) {
+    assert.ok(v.commands.has(name), "command " + name);
+  }
+  for (const name of ["communication_set_mode", "communication_status", "communication_reset"]) {
+    assert.ok(v.tools.has(name), "tool " + name);
+  }
+});
+
+await checkAsync("V2 default session injects FUNCTIONAL policy", async () => {
+  const v = makeV2Ctx();
+  await v2setup(v.ctx);
+  await v2prompt(v.handlers, "v2-default", "What can you do in this project?");
+  const sys = await v2system(v.handlers, "v2-default", ["base"]);
+  assert.equal(sys[0], "base");
+  assert.match(sys[sys.length - 1], /mode: FUNCTIONAL/);
+});
+
+await checkAsync("V2 explicit request lifts then expires after the turn", async () => {
+  const v = makeV2Ctx();
+  await v2setup(v.ctx);
+  await v2prompt(v.handlers, "v2-temp", "Show me the exact code for this.");
+  let sys = await v2system(v.handlers, "v2-temp");
+  assert.match(sys[sys.length - 1], /mode: TECHNICAL/);
+  await v2prompt(v.handlers, "v2-temp", "Thanks, what else can you do?");
+  sys = await v2system(v.handlers, "v2-temp");
+  assert.match(sys[sys.length - 1], /mode: FUNCTIONAL/);
+});
+
+await checkAsync("V2 pinned mode survives; reset restores default", async () => {
+  const v = makeV2Ctx();
+  await v2setup(v.ctx);
+  await v.commands.get("technical").execute({ sessionID: "v2-pin", prompt: { text: "" }, delivery: "steer" });
+  assert.match(v.prompts[v.prompts.length - 1].text, /TECHNICAL/);
+  await v2prompt(v.handlers, "v2-pin", "Okay, and what now?");
+  let sys = await v2system(v.handlers, "v2-pin");
+  assert.match(sys[sys.length - 1], /mode: TECHNICAL/);
+  await v.commands.get("communication").execute({ sessionID: "v2-pin", prompt: { text: "/communication reset" }, delivery: "steer" });
+  const status = v.prompts[v.prompts.length - 1].text;
+  assert.match(status, /Communication mode: FUNCTIONAL/);
+  sys = await v2system(v.handlers, "v2-pin");
+  assert.match(sys[sys.length - 1], /mode: FUNCTIONAL/);
+});
+
+await checkAsync("V2 status reports live mode without tools", async () => {
+  const v = makeV2Ctx();
+  await v2setup(v.ctx);
+  await v.commands.get("engineering").execute({ sessionID: "v2-status", prompt: { text: "" }, delivery: "steer" });
+  await v.commands.get("communication").execute({ sessionID: "v2-status", prompt: { text: "" }, delivery: "steer" });
+  assert.match(v.prompts[v.prompts.length - 1].text, /Communication mode: ENGINEERING/);
+});
+
 console.log("\n" + passed + " checks passed.");

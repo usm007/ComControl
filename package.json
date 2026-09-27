@@ -1,6 +1,6 @@
 {
   "name": "comcontrol",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Global OpenCode plugin: plain-language answers by default, technical detail on demand.",
   "type": "module",
   "main": "./plugins/communication-controller.js",
@@ -15,7 +15,8 @@
     "communication-controller.json"
   ],
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.15"
+    "@opencode-ai/plugin": "1.18.15",
+    "@opencode/plugin": "^2.0.18"
   },
   "license": "MIT"
 }
