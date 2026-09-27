@@ -17,9 +17,12 @@
  *   TECHNICAL for that turn. When the turn ends (`session.idle`) the
  *   session falls back to FUNCTIONAL unless you pinned a mode with a
  *   slash command.
- * - `command.execute.before` + real plugin tools perform mode switches.
- *   The mode lives in THIS plugin's state — commands never rely on the
- *   model merely "remembering" anything.
+ * - `command.execute.before` performs mode switches directly in plugin
+ *   state (no tool call needed) — the mode lives in THIS plugin, commands
+ *   never rely on the model merely "remembering" anything. Plugin tools
+ *   (`communication_set_mode`, `communication_status`,
+ *   `communication_reset`) are a progressive enhancement for autonomous
+ *   model use; every slash command works with or without them.
  * - `experimental.text.complete` is a read-only tripwire: it never edits
  *   answers (accuracy outranks style), it only logs when a functional
  *   answer leaks implementation details, so the policy can be improved.
@@ -242,13 +245,13 @@ function looksLikeLeak(text) {
   return null;
 }
 
-async function logDebug(client, message, extra) {
+async function logDebug(client, message, extra, level) {
   try {
     if (client && client.app && typeof client.app.log === "function") {
       await client.app.log({
         body: {
           service: "communication-controller",
-          level: "debug",
+          level: level || "debug",
           message,
           extra: extra || {},
         },
@@ -286,11 +289,27 @@ function findEventSessionId(event) {
 }
 
 async function loadToolHelper() {
+  // Strategy 1: standard ESM resolution (works when node_modules is
+  // visible from the plugin file, e.g. the project ./ComControl copy).
   try {
-    return (await import("@opencode-ai/plugin")).tool;
+    const mod = await import("@opencode-ai/plugin");
+    if (mod && typeof mod.tool !== "undefined") return { tool: mod.tool, via: "import" };
+  } catch {
+    // fall through to the require fallback below
+  }
+  // Strategy 2: createRequire anchored at THIS file. Plugin sandboxes
+  // sometimes evaluate modules without normal ESM resolution context;
+  // requiring relative to our own path still finds adjacent node_modules.
+  try {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    // eslint-disable-next-line global-require
+    const mod = require("@opencode-ai/plugin");
+    if (mod && typeof mod.tool !== "undefined") return { tool: mod.tool, via: "require" };
   } catch {
     return null;
   }
+  return null;
 }
 
 const CommunicationController = async (ctx) => {
@@ -298,10 +317,16 @@ const CommunicationController = async (ctx) => {
   loadConfig();
 
   let toolHelpers = null;
+  let toolVia = "none";
   try {
-    toolHelpers = await loadToolHelper();
+    const loaded = await loadToolHelper();
+    if (loaded) {
+      toolHelpers = loaded.tool;
+      toolVia = loaded.via || "unknown";
+    }
   } catch {
     toolHelpers = null;
+    toolVia = "none";
   }
 
   const hooks = {
@@ -477,6 +502,24 @@ const CommunicationController = async (ctx) => {
         },
       }),
     };
+  }
+
+  // Startup diagnostic: always visible (info level) so a missing tool
+  // helper or bad config is obvious in logs instead of failing silently
+  // later when a command needs a tool.
+  try {
+    await logDebug(
+      client,
+      "communication-controller started",
+      {
+        toolsRegistered: !!toolHelpers,
+        toolVia: toolVia,
+        defaultMode: loadConfig().defaultMode,
+      },
+      "info"
+    );
+  } catch {
+    // startup logging must never break plugin load
   }
 
   return hooks;
